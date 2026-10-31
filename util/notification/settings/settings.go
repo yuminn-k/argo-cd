@@ -91,11 +91,17 @@ func initGetVars(argocdService service.Service, cfg *api.Config, configMap *core
 		return nil, err
 	}
 
+	// Templates print []byte as a list of numbers, so expose secret values as strings.
+	secrets := make(map[string]string, len(secret.Data))
+	for k, v := range secret.Data {
+		secrets[k] = string(v)
+	}
+
 	return func(obj map[string]any, dest services.Destination) map[string]any {
 		vars := map[string]any{
 			"app":     obj,
 			"context": injectLegacyVar(context, dest.Service),
-			"secrets": secret.Data,
+			"secrets": secrets,
 		}
 
 		// Add AppProject to template variables

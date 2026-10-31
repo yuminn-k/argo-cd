@@ -2,7 +2,9 @@ package settings
 
 import (
 	"fmt"
+	"strings"
 	"testing"
+	"text/template"
 
 	"github.com/argoproj/notifications-engine/pkg/api"
 	"github.com/argoproj/notifications-engine/pkg/services"
@@ -88,8 +90,13 @@ func TestInitGetVars(t *testing.T) {
 	t.Run("Vars provider serves notification secrets on secrets key", func(t *testing.T) {
 		t.Parallel()
 		result := varsProvider(emptyAppData, testDestination)
-		assert.NotNil(t, result["secrets"])
-		assert.Equal(t, result["secrets"], notificationsSecret.Data)
+		assert.Equal(t, map[string]string{"notification-secret": "secret-value"}, result["secrets"])
+
+		// https://github.com/argoproj/argo-cd/issues/21022
+		tmpl := template.Must(template.New("body").Parse(`token={{ index .secrets "notification-secret" }}`))
+		var body strings.Builder
+		require.NoError(t, tmpl.Execute(&body, result))
+		assert.Equal(t, "token=secret-value", body.String())
 	})
 	t.Run("Vars provider serves empty appProject when AppProject not found", func(t *testing.T) {
 		t.Parallel()
