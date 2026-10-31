@@ -177,8 +177,10 @@ argocd admin settings rbac can someuser create application 'default/app' --defau
 				subResource = args[3]
 			}
 
+			// Without a kubeconfig this errors, but --namespace is still reported, and
+			// the namespace is not needed when the policy comes from a file.
 			namespace, nsOverride, err := clientConfig.Namespace()
-			if err != nil {
+			if err != nil && policyFile == "" {
 				log.Fatalf("could not create k8s client: %v", err)
 			}
 
@@ -188,15 +190,7 @@ argocd admin settings rbac can someuser create application 'default/app' --defau
 				log.Fatal("please provide exactly one of --policy-file or --namespace")
 			}
 
-			restConfig, err := clientConfig.ClientConfig()
-			if err != nil {
-				log.Fatalf("could not create k8s client: %v", err)
-			}
-			realClientset, err := kubernetes.NewForConfig(restConfig)
-			if err != nil {
-				log.Fatalf("could not create k8s client: %v", err)
-			}
-
+			realClientset := newPolicyKubeClient(clientConfig, policyFile)
 			userPolicy, newDefaultRole, matchMode := getPolicy(ctx, policyFile, realClientset, namespace)
 
 			// Use built-in policy as augmentation if requested
@@ -281,18 +275,11 @@ argocd admin settings rbac validate --namespace argocd
 				log.Fatal("please provide exactly one of --policy-file or --namespace")
 			}
 
-			restConfig, err := clientConfig.ClientConfig()
-			if err != nil {
-				log.Fatalf("could not get config to create k8s client: %v", err)
-			}
-			realClientset, err := kubernetes.NewForConfig(restConfig)
-			if err != nil {
-				log.Fatalf("could not create k8s client: %v", err)
-			}
-
+			realClientset := newPolicyKubeClient(clientConfig, policyFile)
 			userPolicy, _, _ := getPolicy(ctx, policyFile, realClientset, namespace)
 			if userPolicy != "" {
-				if err := rbac.ValidatePolicy(userPolicy); err == nil {
+				err := rbac.ValidatePolicy(userPolicy)
+				if err == nil {
 					fmt.Print("Policy is valid.\n")
 					os.Exit(0)
 				}
@@ -307,6 +294,23 @@ argocd admin settings rbac validate --namespace argocd
 	command.Flags().StringVar(&namespace, "namespace", "", "namespace to get argo rbac configmap from")
 
 	return command
+}
+
+// newPolicyKubeClient returns nil when the policy comes from a local file, so
+// commands given --policy-file work without Kubernetes credentials.
+func newPolicyKubeClient(clientConfig clientcmd.ClientConfig, policyFile string) kubernetes.Interface {
+	if policyFile != "" {
+		return nil
+	}
+	restConfig, err := clientConfig.ClientConfig()
+	if err != nil {
+		log.Fatalf("could not get config to create k8s client: %v", err)
+	}
+	clientset, err := kubernetes.NewForConfig(restConfig)
+	if err != nil {
+		log.Fatalf("could not create k8s client: %v", err)
+	}
+	return clientset
 }
 
 // Load user policy file if requested or use Kubernetes client to get the

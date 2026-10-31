@@ -1,12 +1,18 @@
 package admin
 
 import (
+	"bytes"
+	"errors"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/sirupsen/logrus"
 	logtest "github.com/sirupsen/logrus/hooks/test"
+	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
@@ -336,6 +342,61 @@ func TestNewRBACValidateCommand(t *testing.T) {
 	require.NotNil(t, command)
 	assert.Equal(t, "validate", command.Name())
 	assert.Equal(t, "Validate RBAC policy", command.Short)
+}
+
+// https://github.com/argoproj/argo-cd/issues/17334
+func TestRBACCommandsWithPolicyFileNeedNoKubeconfig(t *testing.T) {
+	if args := os.Getenv("RBAC_POLICY_FILE_ARGS"); args != "" {
+		var cmd *cobra.Command
+		if strings.HasPrefix(args, "can ") {
+			cmd = NewRBACCanCommand()
+		} else {
+			cmd = NewRBACValidateCommand()
+		}
+		cmd.SetArgs(strings.Fields(args)[1:])
+		_ = cmd.Execute()
+		return
+	}
+
+	invalidPolicy := filepath.Join(t.TempDir(), "invalid.csv")
+	require.NoError(t, os.WriteFile(invalidPolicy, []byte("p, role:user, clusters\n"), 0o600))
+
+	tests := []struct {
+		name     string
+		args     string
+		exitCode int
+		stdout   string
+	}{
+		{"validate valid policy", "validate --policy-file testdata/rbac/policy.csv", 0, "Policy is valid.\n"},
+		{"validate invalid policy", "validate --policy-file " + invalidPolicy, 1, "Policy is invalid: "},
+		{"can", "can role:user get applications */* --policy-file testdata/rbac/policy.csv", 0, "Yes\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestRBACCommandsWithPolicyFileNeedNoKubeconfig$")
+			cmd.Env = append(os.Environ(),
+				"RBAC_POLICY_FILE_ARGS="+tt.args,
+				"HOME="+home,
+				"KUBECONFIG="+filepath.Join(home, "missing"),
+				"KUBERNETES_SERVICE_HOST=",
+			)
+			var stdout, stderr bytes.Buffer
+			cmd.Stdout = &stdout
+			cmd.Stderr = &stderr
+			err := cmd.Run()
+
+			exitCode := 0
+			if e, ok := errors.AsType[*exec.ExitError](err); ok {
+				exitCode = e.ExitCode()
+			} else {
+				require.NoError(t, err)
+			}
+			assert.Equal(t, tt.exitCode, exitCode, "stderr: %s", stderr.String())
+			assert.True(t, strings.HasPrefix(stdout.String(), tt.stdout), "stdout: %q", stdout.String())
+			assert.NotContains(t, stdout.String(), "<nil>")
+		})
+	}
 }
 
 func Test_isGroupSubject(t *testing.T) {
